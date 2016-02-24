@@ -6,7 +6,6 @@ import hmac
 import hashlib
 import pymysql
 from db_utils import mysql_to_pandas
-from pyspark.sql import Row
 
 
 ##########  HIVE Traces ###################
@@ -101,6 +100,37 @@ IP, UA, XFF, requests
 
 """
 
+def get_hash_function_via_input():
+    key = input("Please Provide the Hash Key:")
+    clear_output()
+    def hash_function(s):
+        code = hmac.new(key.encode('utf-8'), s.encode('utf-8'), hashlib.sha1)
+        s = code.hexdigest()
+        return s
+    return hash_function
+
+
+def parse_row(line):
+    row = line.strip().split('\t')
+    if len(row) !=4:
+        return None
+    
+    d = {'ip': row[0],
+         'ua': row[1],
+         'requests' : parse_requests(row[3])
+        }
+    return d
+
+def parse_requests(requests):
+    ret = []
+    for r in requests.split('||'):
+        t = r.split('|')
+        if len(t) != 3:
+            continue
+        ret.append({'t': t[0], 'r': t[1], 'p': t[2]})
+    ret.sort(key = lambda x: x['t']) # sort by time
+    return ret
+
 ########## Join Traces and Clicks ##########################
 def query_db(host,query, params):
     conn = pymysql.connect(host =host, read_default_file="/etc/mysql/conf.d/analytics-research-client.cnf")
@@ -150,13 +180,15 @@ def get_click_rdd(sc, day, host):
     return sc.parallelize(d_click_list)
 
 def get_click_df(sc, sqlContext, day, host, name):
+    from pyspark.sql import Row
+
     click_rdd = get_click_rdd(sc, day, host)
     click_row_rdd = click_rdd.map(lambda x: Row(key=x[0], click_data=x[1])) 
     clickDF = sqlContext.createDataFrame(click_row_rdd)
     clickDF.registerTempTable(name)
     return clickDF
 
-def get_file_name(day, host, table):
+def get_partition_name(day, host):
     day_dt = dateutil.parser.parse(day)
 
     params = {
@@ -164,8 +196,7 @@ def get_file_name(day, host, table):
         'month' : day_dt.month,
         'day' : day_dt.day,
         'host' : host,
-        'table' : table,
     }
-    fname = '%(table)s/year=%(year)d/month=%(month)d/day=%(day)d/host=%(host)s' % params
+    fname = 'year=%(year)d/month=%(month)d/day=%(day)d/host=%(host)s' % params
     return fname
 
