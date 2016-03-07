@@ -77,8 +77,8 @@ if __name__ == '__main__':
 
             trace_rdd = sc.textFile(input_partition) \
                 .map(lambda x: json.loads(x)) \
-                .filter(lambda x: len(x) == 3) \
-                .map(lambda x: Row(key=x['ip'] + x['ua'], requests=x['requests']))
+                .filter(lambda x: len(x) == 4) \
+                .map(lambda x: Row(key=x['ip'] + x['ua'], requests=x['requests'], geo_data=x['geo_data']))
             
 
             traceDF = sqlContext.createDataFrame(trace_rdd)
@@ -95,7 +95,7 @@ if __name__ == '__main__':
 
             click_traces = []
             for row in res:
-                d = {'key': row.key, 'requests': row.requests, 'click_data':row.click_data}
+                d = {'key': row.key, 'requests': row.requests, 'click_data':row.click_data, 'geo_data': row.geo_data}
                 click_traces.append(d)
 
             outfile = os.path.join(output_partition, 'join_data.json')

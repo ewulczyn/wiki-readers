@@ -53,14 +53,16 @@ def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority
         user_agent,
         x_forwarded_for,
         CONCAT_WS('||', COLLECT_LIST(request)) as requests,
-        uri_host as host
+        uri_host as host,
+        geocoded_data
     FROM
         (SELECT
             client_ip,
             user_agent,
             x_forwarded_for,
             CONCAT(ts, '|', referer, '|', uri_path ) request,
-            uri_host
+            uri_host,
+            geocoded_data
         FROM
             wmf.webrequest
         WHERE 
@@ -73,7 +75,8 @@ def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority
         client_ip,
         user_agent,
         x_forwarded_for,
-        uri_host
+        uri_host,
+        geocoded_data
     """
 
     day_dt = dateutil.parser.parse(day)

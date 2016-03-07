@@ -30,12 +30,13 @@ hash_trace_ips.py \
 # WARNING THESE FUNCTIONS ARE DUPLICATED IN trace_utils.py
 def parse_row(line):
     row = line.strip().split('\t')
-    if len(row) !=4:
+    if len(row) !=5:
         return None
     
     d = {'ip': row[0],
          'ua': row[1],
-         'requests' : parse_requests(row[3])
+         'requests' : parse_requests(row[3]),
+         'geo_data' : row[4]
         }
     return d
 
