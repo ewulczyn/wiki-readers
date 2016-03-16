@@ -20,11 +20,11 @@ spark-submit \
     --executor-cores 4 \
     --queue priority \
 hash_trace_ips.py \
-    --start 2016-02-17 \
-    --stop 2016-02-19 \
-    --input_dir /user/hive/warehouse/traces.db/test \
-    --output_dir /user/ellery/readers/data/hashed_traces/test \
-    --key \
+    --start 2016-03-01 \
+    --stop 2016-03-08 \
+    --input_dir /user/hive/warehouse/traces.db/rs3v2 \
+    --output_dir /user/ellery/readers/data/hashed_traces/rs3v2 \
+    --key 
 """
 
 # WARNING THESE FUNCTIONS ARE DUPLICATED IN trace_utils.py

@@ -26,7 +26,9 @@ def create_hive_trace_table(db_name, table_name, local = True):
         ip STRING,
         ua STRING,
         xff STRING,
-        requests STRING
+        requests STRING,
+        geocoded_data MAP<STRING,STRING>
+
     )
     PARTITIONED BY (year INT, month INT, day INT, host STRING)
     ROW FORMAT DELIMITED
@@ -52,31 +54,62 @@ def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority
         client_ip,
         user_agent,
         x_forwarded_for,
-        CONCAT_WS('||', COLLECT_LIST(request)) as requests,
-        uri_host as host,
-        geocoded_data
+        CONCAT_WS('||', COLLECT_LIST(request)) AS requests,
+        geocoded_data,
+        uri_host AS host
     FROM
         (SELECT
             client_ip,
             user_agent,
             x_forwarded_for,
-            CONCAT(ts, '|', referer, '|', uri_path ) request,
-            uri_host,
-            geocoded_data
-        FROM
-            wmf.webrequest
-        WHERE 
-            is_pageview
-            AND agent_type = 'user'
-            AND %(time_conditions)s
-            AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
-        ) a
+            CONCAT(ts, '|', referer, '|', title ) AS request,
+            geocoded_data,
+            uri_host
+            FROM
+                (SELECT
+                    client_ip,
+                    user_agent,
+                    x_forwarded_for,
+                    ts, 
+                    referer,
+                    geocoded_data,
+                    uri_host,
+                    CASE
+                        WHEN rd_to IS NULL THEN raw_title
+                        ELSE rd_to
+                    END AS title
+                FROM
+                    (SELECT
+                        client_ip,
+                        user_agent,
+                        x_forwarded_for,
+                        ts, 
+                        referer,
+                        REGEXP_EXTRACT(reflect('java.net.URLDecoder', 'decode', uri_path), '/wiki/(.*)', 1) as raw_title,
+                        geocoded_data,
+                        uri_host
+                    FROM
+                        wmf.webrequest
+                    WHERE 
+                        is_pageview
+                        AND agent_type = 'user'
+                        AND %(time_conditions)s
+                        AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
+                        AND LENGTH(REGEXP_EXTRACT(reflect('java.net.URLDecoder', 'decode', uri_path), '/wiki/(.*)', 1)) > 0
+                    ) c
+                LEFT JOIN
+                    traces.en_redirect r
+                ON c.raw_title = r.rd_from
+                ) b
+            ) a
     GROUP BY
         client_ip,
         user_agent,
         x_forwarded_for,
-        uri_host,
-        geocoded_data
+        geocoded_data,
+        uri_host
+    HAVING 
+        COUNT(*) < 500
     """
 
     day_dt = dateutil.parser.parse(day)
@@ -159,33 +192,55 @@ def get_all_clicks():
         AND event_surveyResponseValue ='ext-quicksurveys-external-survey-yes-button'
     """ 
 
-    return query_db('analytics-store.eqiad.wmnet', query, {})    
+    query = """
+    SELECT
+        webHost,
+        page_title as title,
+        event_surveyInstanceToken as survey_token,
+        clientIp,
+        userAgent,
+        CAST(DATE_FORMAT(STR_TO_DATE(timestamp, '%%Y%%m%%d%%H%%i%%S'), '%%Y-%%m-%%d %%H:%%i:%%S') AS CHAR(22) CHARSET utf8) AS timestamp
+    FROM
+        log.QuickSurveysResponses_15266417 s,
+        enwiki.page p
+    WHERE
+        p.page_id = s.event_pageId 
+        AND s.event_surveyResponseValue ='ext-quicksurveys-external-survey-yes-button'
+    """
+
+    df =  query_db('analytics-store.eqiad.wmnet', query, {})    
+    df.sort_values(by='timestamp', inplace = True)
+    df.drop_duplicates(subset = 'survey_token', inplace = True)
+    return df
 
 
-def get_clicks(day, host):
-    start_mw = dateutil.parser.parse(day).strftime('%Y%m%d') + '000000'
-    stop_mw = dateutil.parser.parse(day).strftime('%Y%m%d') + '235959'
-
-    d_click = get_all_clicks()
-    d_click_reduced = d_click[d_click['timestamp'] < stop_mw]
-    d_click_reduced = d_click_reduced[d_click_reduced['timestamp'] > start_mw]
+def get_clicks(d_all_clicks, day, host):
+    start = dateutil.parser.parse(day).strftime('%Y-%m-%d') + ' 00:00:00'
+    stop = dateutil.parser.parse(day).strftime('%Y-%m-%d') + ' 23:59:59'
+    d_click_reduced = d_all_clicks[d_all_clicks['timestamp'] < stop]
+    d_click_reduced = d_click_reduced[d_click_reduced['timestamp'] > start]
     d_click_reduced = d_click_reduced[d_click_reduced['webHost'] == host]
     return d_click_reduced
 
-def get_click_rdd(sc, day, host):
-    fields = ['event_pageId', 'event_pageTitle', 'event_surveyInstanceToken', 'timestamp', 'i.timestamp']
-    d_click = get_clicks(day, host)
+def get_click_rdd(sc, d_all_clicks, day, host):
+    fields = ['title', 'survey_token', 'timestamp'] #, 'i.timestamp']
+    d_click = get_clicks(d_all_clicks, day, host)
     d_click_list = []
     for i, r in d_click.iterrows():
-        key = r['clientIp'] + r['userAgent'][1:-1]
-        data = dict(r[fields])
-        d_click_list.append((key, data))
+        try:
+            key = r['clientIp'] + r['userAgent'][1:-1]
+            data = dict(r[fields])
+            d_click_list.append((key, data))
+        except:
+            print('ERROR')
+            print(r)
+            continue
     return sc.parallelize(d_click_list)
 
-def get_click_df(sc, sqlContext, day, host, name):
+def get_click_df(sc, d_all_clicks, sqlContext, day, host, name):
     from pyspark.sql import Row
 
-    click_rdd = get_click_rdd(sc, day, host)
+    click_rdd = get_click_rdd(sc, d_all_clicks, day, host)
     click_row_rdd = click_rdd.map(lambda x: Row(key=x[0], click_data=x[1])) 
     clickDF = sqlContext.createDataFrame(click_row_rdd)
     clickDF.registerTempTable(name)
@@ -203,3 +258,18 @@ def get_partition_name(day, host):
     fname = 'year=%(year)d/month=%(month)d/day=%(day)d/host=%(host)s' % params
     return fname
 
+def parse_geo(g):
+    return dict( [ e.split('\x03') for e in g.split('\x02')])
+
+def article_in_trace(r):
+    page = r['click_data']['title']
+    return page in [e['p'] for e in r['requests']]
+
+# generate random sequence of times
+def get_random_time_list():
+    dt = parse_date('2016-03-01')
+    times = [dt]
+    for i in range(10):
+        n = random.randint(0,60)
+        times.append(times[-1] + datetime.timedelta(minutes=n))
+    return times

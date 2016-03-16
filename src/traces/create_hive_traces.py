@@ -8,10 +8,10 @@ from trace_utils import create_hive_trace_table, add_day_to_hive_trace_table
 """
 USAGE:
 python create_hive_traces.py \
---start 2016-02-17 \
---stop 2016-02-19 \
+--start 2016-03-01 \
+--stop 2016-03-08 \
 --db traces \
---table test \
+--table rs3v2 \
 """
 
 if __name__ == '__main__':
