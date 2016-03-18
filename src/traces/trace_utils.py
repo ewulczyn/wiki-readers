@@ -6,6 +6,8 @@ import hmac
 import hashlib
 import pymysql
 from db_utils import mysql_to_pandas
+import pandas as pd
+import ast
 
 
 ##########  HIVE Traces ###################
@@ -273,3 +275,23 @@ def get_random_time_list():
         n = random.randint(0,60)
         times.append(times[-1] + datetime.timedelta(minutes=n))
     return times
+
+def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data', start = '2016-03-01', stop = '2016-03-08'):
+    dfs = []
+    
+    days = [str(day) for day in pd.date_range(start,stop)] 
+    
+    for host in ('en.wikipedia.org', 'en.m.wikipedia.org'):
+        for day in days:
+            partition = get_partition_name(day, host)
+            dfs.append(pd.read_csv(os.path.join(directory, version, partition, 'join_data.tsv'), sep = '\t'))
+    
+    
+    df =  pd.concat(dfs)
+    df['geo_data'] = df['geo_data'].apply(lambda x: ast.literal_eval(x))
+    df['requests'] = df['requests'].apply(lambda x: ast.literal_eval(x))
+    df['click_data'] = df['click_data'].apply(lambda x: ast.literal_eval(x))
+    return df
+
+
+

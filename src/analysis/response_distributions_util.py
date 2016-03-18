@@ -1,25 +1,37 @@
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from stats_utils import *
-import copy
 
 def get_std_err(num_events, num_trials):
     dist =  get_beta_dist(num_events, num_trials, num_samples = 5000)
     ci = bayesian_ci(dist, 95)
-    return (ci[1]-ci[0]) / 2
+    return ci[0] #(ci[1]-ci[0]) / 2
+
 def get_std_err_series(s):
     n = s.sum()
     return s.apply(lambda x: get_std_err(x, n))
 
-def recode_host(h):
-    if h == 'en.m.wikipedia.org':
-        return 'mobile'
-    if h == 'en.wikipedia.org':
-        return 'desktop'
-    else:
-        return None
+
+def get_lower_std_err(num_events, num_trials):
+    dist =  get_beta_dist(num_events, num_trials, num_samples = 5000)
+    ci = bayesian_ci(dist, 95)
+    return ci[0]
+    
+def get_lower_std_err_series(s):
+    n = s.sum()
+    return s.apply(lambda x: get_lower_std_err(x, n))
+
+
+def get_upper_std_err(num_events, num_trials):
+    dist =  get_beta_dist(num_events, num_trials, num_samples = 5000)
+    ci = bayesian_ci(dist, 95)
+    return ci[1]
+    
+def get_upper_std_err_series(s):
+    n = s.sum()
+    return s.apply(lambda x: get_upper_std_err(x, n))
+
     
 
 def plot_proportion(d, x, hue, title,  xorder = None, dropna_x = True, dropna_hue = True, rotate = False, normx = True):
@@ -73,3 +85,27 @@ def plot_proportion(d, x, hue, title,  xorder = None, dropna_x = True, dropna_hu
     if rotate:
         plt.xticks(rotation=45) 
 
+def plot_over_time(d, x, xticks, hue, hue_order, figsize, xlim ):
+    plt.figure(figsize = figsize)
+    d_in = pd.DataFrame({'count' : d.groupby( [x, hue] ).size()}).reset_index()
+    d_in['lower_err'] = d_in.groupby(x)['count'].transform(get_lower_std_err_series)
+    d_in['upper_err'] = d_in.groupby(x)['count'].transform(get_upper_std_err_series)
+    d_in['proportion'] = d_in.groupby(x).transform(lambda x: x/x.sum())['count']
+    
+
+    for h in hue_order:
+        d_in_h = d_in[d_in[hue] == h]
+        plt.errorbar(d_in_h[x].values,
+                     d_in_h['proportion'].values,
+                     fmt='-o',
+                     yerr= [d_in_h['proportion'] - d_in_h['lower_err'] ,d_in_h['upper_err'] - d_in_h['proportion'] ],
+                     label = h,
+                     alpha = 0.9,
+                     linewidth = 1.0,
+                     markersize = 5.0
+                    )
+    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    plt.xlabel(x)
+    plt.xlim(xlim)
+    plt.ylabel('proportion')
+    plt.xticks(d_in_h[x].values, xticks)
