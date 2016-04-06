@@ -8,15 +8,11 @@ import pymysql
 from db_utils import mysql_to_pandas
 import pandas as pd
 import ast
-
+from db_utils import exec_hive_stat2 as exec_hive
 
 ##########  HIVE Traces ###################
 
-def exec_hive(query, priority = False):
-    if priority:
-        query = "SET mapreduce.job.queuename=priority;" + query
-    cmd = """hive -e \" """ +query+ """ \" """ 
-    os.system(cmd)
+
 
 
 def create_hive_trace_table(db_name, table_name, local = True):
@@ -44,7 +40,7 @@ def create_hive_trace_table(db_name, table_name, local = True):
     if local:
         execute_hive_expression(query % params)
     else: 
-        exec_hive(query % params)
+        exec_hive_stat2(query % params)
 
 
 def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority = True):
@@ -94,6 +90,7 @@ def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority
                         wmf.webrequest
                     WHERE 
                         is_pageview
+                        AND webrequest_source = 'text'
                         AND agent_type = 'user'
                         AND %(time_conditions)s
                         AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
@@ -293,5 +290,8 @@ def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/dat
     df['click_data'] = df['click_data'].apply(lambda x: ast.literal_eval(x))
     return df
 
+
+
+### a2v preprocess
 
 

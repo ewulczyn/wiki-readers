@@ -12,6 +12,7 @@ python create_hive_traces.py \
 --stop 2016-03-08 \
 --db traces \
 --table rs3v2 \
+--priority
 """
 
 if __name__ == '__main__':
@@ -37,6 +38,11 @@ if __name__ == '__main__':
         help='hive table'
     )
 
+    parser.add_argument(
+        '--priority', default=False, action="store_true",
+        help='hive table'
+    )
+
 
     args = parser.parse_args()
 
@@ -48,4 +54,4 @@ if __name__ == '__main__':
     days = [str(day) for day in pd.date_range(start,stop)] 
     for day in days:
         print('Adding Traces From: ', day)
-        add_day_to_hive_trace_table(args.db, args.table, day, local = False)
+        add_day_to_hive_trace_table(args.db, args.table, day, local = False, priority = args.priority)
