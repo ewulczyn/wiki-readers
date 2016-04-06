@@ -1,18 +1,17 @@
-from db_utils import execute_hive_expression,get_hive_timespan
+from db_utils import execute_hive_expression,get_hive_timespan,query_analytics_store,query_db_from_stat
+from db_utils import exec_hive_stat2 as exec_hive
 import os
 import dateutil
 from IPython.display import clear_output
 import hmac
 import hashlib
 import pymysql
-from db_utils import mysql_to_pandas
 import pandas as pd
 import ast
-from db_utils import exec_hive_stat2 as exec_hive
+import datetime
+import pytz, datetime, dateutil
 
 ##########  HIVE Traces ###################
-
-
 
 
 def create_hive_trace_table(db_name, table_name, local = True):
@@ -167,13 +166,7 @@ def parse_requests(requests):
     return ret
 
 ########## Join Traces and Clicks ##########################
-def query_db(host,query, params):
-    conn = pymysql.connect(host =host, read_default_file="/etc/mysql/conf.d/analytics-research-client.cnf")
-    cursor = conn.cursor(pymysql.cursors.DictCursor)
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
-    return mysql_to_pandas(rows)
+
 
 
 def get_all_clicks():
@@ -207,7 +200,7 @@ def get_all_clicks():
         AND s.event_surveyResponseValue ='ext-quicksurveys-external-survey-yes-button'
     """
 
-    df =  query_db('analytics-store.eqiad.wmnet', query, {})    
+    df =  query_db_from_stat('analytics-store.eqiad.wmnet', query, {})    
     df.sort_values(by='timestamp', inplace = True)
     df.drop_duplicates(subset = 'survey_token', inplace = True)
     return df
@@ -273,7 +266,12 @@ def get_random_time_list():
         times.append(times[-1] + datetime.timedelta(minutes=n))
     return times
 
-def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data', start = '2016-03-01', stop = '2016-03-08'):
+###### Join Click and Trace Data #####
+
+def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces', start = '2016-03-01', stop = '2016-03-08'):
+    """
+    Loads all join_data.tsvs for the given timespan into a single df.
+    """
     dfs = []
     
     days = [str(day) for day in pd.date_range(start,stop)] 
@@ -292,6 +290,63 @@ def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/dat
 
 
 
-### a2v preprocess
+
+def recode_host(h):
+    if h == 'en.m.wikipedia.org':
+        return 'mobile'
+    if h == 'en.wikipedia.org':
+        return 'desktop'
+    else:
+        return None
 
 
+def load_survey_dfs(survey_file = '../../data/responses.tsv'):
+
+    """
+    Returns complete survey data as well as survey data joinable to a yes click in EL
+    """
+    d_survey = pd.read_csv(survey_file, sep = '\t')
+
+    query = """
+    SELECT
+        webHost AS host,
+        event_surveyInstanceToken as token
+    FROM 
+        log.QuickSurveysResponses_15266417
+    WHERE
+        event_surveyResponseValue ='ext-quicksurveys-external-survey-yes-button'
+        AND webHost in ('en.m.wikipedia.org', 'en.wikipedia.org')
+    """
+
+    d_click = query_analytics_store( query, {})
+    d_click['host'] = d_click['host'].apply(recode_host)
+    d_survey_in_el = d_survey.merge(d_click, how = 'inner', on = 'token')
+
+    return d_survey, d_survey_in_el
+    
+def utc_to_local(dt, timezone):
+    utc_dt = pytz.utc.localize(dt, is_dst=None)
+    try:
+        return  utc_dt.astimezone (pytz.timezone (timezone) )
+    except:
+        return None
+
+def get_joined_survey_and_traces(d_traces, d_survey_in_el):
+    """
+    Join click traces and survey data in EL
+    """
+    dt = d_survey_in_el.merge(d_traces, how = 'inner', right_on = 'survey_token', left_on = 'token')
+    dt['utc_click_dt'] = dt['click_data'].apply(lambda x: datetime.datetime.strptime (x['timestamp'], "%Y-%m-%d %H:%M:%S"))
+    dt['local_click_dt'] = dt.apply(lambda x: utc_to_local(x['utc_click_dt'], x['geo_data']['timezone']), axis = 1)
+    del dt['token']
+    dt.rename(columns={  'submit_timestamp': 'survey_submit_dt',
+                         'key': 'client_token',
+                         'requests': 'trace_data',
+                        },
+              inplace=True)
+
+    dt['utc_click_dt'] = dt['utc_click_dt'].apply(lambda x: datetime.datetime.strftime (x, "%Y-%m-%d %H:%M:%S"))
+    dt['local_click_dt'] = dt['local_click_dt'].apply(lambda x:  datetime.datetime.strftime (x, "%Y-%m-%d %H:%M:%S") if x else x)
+
+
+    return dt
