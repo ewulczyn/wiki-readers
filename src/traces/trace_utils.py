@@ -168,7 +168,6 @@ def parse_requests(requests):
 ########## Join Traces and Clicks ##########################
 
 
-
 def get_all_clicks():
     """
     Returns df of "Yes" clicks on the survey
@@ -250,12 +249,7 @@ def get_partition_name(day, host):
     fname = 'year=%(year)d/month=%(month)d/day=%(day)d/host=%(host)s' % params
     return fname
 
-def parse_geo(g):
-    return dict( [ e.split('\x03') for e in g.split('\x02')])
 
-def article_in_trace(r):
-    page = r['click_data']['title']
-    return page in [e['p'] for e in r['requests']]
 
 # generate random sequence of times
 def get_random_time_list():
@@ -266,7 +260,8 @@ def get_random_time_list():
         times.append(times[-1] + datetime.timedelta(minutes=n))
     return times
 
-###### Join Click and Trace Data #####
+
+###### Join Click Traces and Survey Responses #####
 
 def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces', start = '2016-03-01', stop = '2016-03-08'):
     """
