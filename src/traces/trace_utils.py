@@ -14,110 +14,88 @@ import pytz, datetime, dateutil
 ##########  HIVE Traces ###################
 
 
-def create_hive_trace_table(db_name, table_name, local = True):
-    """
-    Create a Table partitioned by day and host
-    """
-    query = """
-    CREATE TABLE IF NOT EXISTS %(db_name)s.%(table_name)s (
-        ip STRING,
-        ua STRING,
-        xff STRING,
-        requests STRING,
-        geocoded_data MAP<STRING,STRING>
+def create_hive_trace_table(db_name, table_name, start, stop, local = True, priority = True):
 
-    )
-    PARTITIONED BY (year INT, month INT, day INT, host STRING)
+    query = """
+
+    SET mapreduce.task.timeout=6000000;
+    DROP TABLE IF EXISTS %(db_name)s.%(table_name)s_requests;
+    CREATE TABLE %(db_name)s.%(table_name)s_requests
     ROW FORMAT DELIMITED
     FIELDS TERMINATED BY '\t'
     STORED AS TEXTFILE
-    """
-
-
-    params = {'db_name': db_name, 'table_name': table_name}
-
-    if local:
-        execute_hive_expression(query % params)
-    else: 
-        exec_hive_stat2(query % params)
-
-
-def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority = True):
-
-    query = """
-    INSERT OVERWRITE TABLE %(db_name)s.%(table_name)s
-    PARTITION(year=%(year)d, month=%(month)d, day =%(day)d, host)
-    SELECT
+    AS SELECT
         client_ip,
         user_agent,
-        x_forwarded_for,
-        CONCAT_WS('||', COLLECT_LIST(request)) AS requests,
         geocoded_data,
-        uri_host AS host
+        user_agent_map,
+        CONCAT( 'ts|', ts,
+                '|referer|', referer,
+                '|title|', title,
+                '|uri_host|', uri_host,
+                '|uri_path|', reflect('java.net.URLDecoder', 'decode', uri_path),
+                '|uri_query|', reflect('java.net.URLDecoder', 'decode', uri_query),
+                '|is_pageview|', is_pageview,
+                '|access_method|', access_method,
+                '|referer_class|', referer_class,
+                '|project|', normalized_host.project_class,
+                '|lang|', normalized_host.project
+            ) AS request
     FROM
         (SELECT
-            client_ip,
-            user_agent,
-            x_forwarded_for,
-            CONCAT(ts, '|', referer, '|', title ) AS request,
-            geocoded_data,
-            uri_host
+            c.*,
+            CASE
+                WHEN NOT is_pageview THEN NULL
+                WHEN rd_to IS NULL THEN raw_title
+                ELSE rd_to
+            END AS title
+        FROM
+            (SELECT
+                w.*,
+                CASE
+                    WHEN is_pageview THEN pageview_info['page_title']
+                    ELSE round(RAND(), 5) 
+                END AS raw_title
             FROM
-                (SELECT
-                    client_ip,
-                    user_agent,
-                    x_forwarded_for,
-                    ts, 
-                    referer,
-                    geocoded_data,
-                    uri_host,
-                    CASE
-                        WHEN rd_to IS NULL THEN raw_title
-                        ELSE rd_to
-                    END AS title
-                FROM
-                    (SELECT
-                        client_ip,
-                        user_agent,
-                        x_forwarded_for,
-                        ts, 
-                        referer,
-                        REGEXP_EXTRACT(reflect('java.net.URLDecoder', 'decode', uri_path), '/wiki/(.*)', 1) as raw_title,
-                        geocoded_data,
-                        uri_host
-                    FROM
-                        wmf.webrequest
-                    WHERE 
-                        is_pageview
-                        AND webrequest_source = 'text'
-                        AND agent_type = 'user'
-                        AND %(time_conditions)s
-                        AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
-                        AND LENGTH(REGEXP_EXTRACT(reflect('java.net.URLDecoder', 'decode', uri_path), '/wiki/(.*)', 1)) > 0
-                    ) c
-                LEFT JOIN
-                    traces.en_redirect r
-                ON c.raw_title = r.rd_from
-                ) b
-            ) a
+                wmf.webrequest w
+            WHERE 
+                webrequest_source = 'text'
+                AND agent_type = 'user'
+                AND %(time_conditions)s
+                AND access_method != 'mobile app'
+                AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
+            ) c
+        LEFT JOIN
+            traces.en_redirect r
+        ON c.raw_title = r.rd_from
+        ) b;
+    
+    SET mapreduce.task.timeout=6000000;
+    DROP TABLE IF EXISTS %(db_name)s.%(table_name)s;
+    CREATE TABLE %(db_name)s.%(table_name)s
+    ROW FORMAT DELIMITED
+    FIELDS TERMINATED BY '\t'
+    STORED AS TEXTFILE
+    AS SELECT
+        client_ip,
+        user_agent,
+        geocoded_data,
+        user_agent_map,
+        CONCAT_WS('REQUEST_DELIM', COLLECT_LIST(request)) AS requests
+    FROM
+        %(db_name)s.%(table_name)s_requests
     GROUP BY
         client_ip,
         user_agent,
-        x_forwarded_for,
         geocoded_data,
-        uri_host
+        user_agent_map
     HAVING 
-        COUNT(*) < 500
+        COUNT(*) < 1000;
     """
 
-    day_dt = dateutil.parser.parse(day)
-
-    params = {  'time_conditions': get_hive_timespan(day, day, hour = False),
+    params = {  'time_conditions': get_hive_timespan(start, stop, hour = False),
                 'db_name': db_name,
                 'table_name': table_name,
-                'year' : day_dt.year,
-                'month': day_dt.month,
-                'day': day_dt.day
                 }
 
     if local:
@@ -168,20 +146,10 @@ def parse_requests(requests):
 ########## Join Traces and Clicks ##########################
 
 
-def get_all_clicks():
+def get_clicks():
     """
     Returns df of "Yes" clicks on the survey
     """
-    query = """
-    SELECT *
-    FROM
-        log.QuickSurveysResponses_15266417 r,
-        log.QuickSurveyInitiation_15278946 i
-    WHERE
-        r.event_surveyInstanceToken = i.event_surveyInstanceToken
-        AND i.event_eventName ='impression'
-        AND event_surveyResponseValue ='ext-quicksurveys-external-survey-yes-button'
-    """ 
 
     query = """
     SELECT
@@ -202,20 +170,12 @@ def get_all_clicks():
     df =  query_db_from_stat('analytics-store.eqiad.wmnet', query, {})    
     df.sort_values(by='timestamp', inplace = True)
     df.drop_duplicates(subset = 'survey_token', inplace = True)
+    df.drop_duplicates(subset = ['clientIp', 'userAgent'], inplace = True)
     return df
 
 
-def get_clicks(d_all_clicks, day, host):
-    start = dateutil.parser.parse(day).strftime('%Y-%m-%d') + ' 00:00:00'
-    stop = dateutil.parser.parse(day).strftime('%Y-%m-%d') + ' 23:59:59'
-    d_click_reduced = d_all_clicks[d_all_clicks['timestamp'] < stop]
-    d_click_reduced = d_click_reduced[d_click_reduced['timestamp'] > start]
-    d_click_reduced = d_click_reduced[d_click_reduced['webHost'] == host]
-    return d_click_reduced
-
-def get_click_rdd(sc, d_all_clicks, day, host):
-    fields = ['title', 'survey_token', 'timestamp'] #, 'i.timestamp']
-    d_click = get_clicks(d_all_clicks, day, host)
+def get_click_rdd(sc, d_click):
+    fields = ['title', 'survey_token', 'timestamp'] 
     d_click_list = []
     for i, r in d_click.iterrows():
         try:
@@ -228,10 +188,10 @@ def get_click_rdd(sc, d_all_clicks, day, host):
             continue
     return sc.parallelize(d_click_list)
 
-def get_click_df(sc, d_all_clicks, sqlContext, day, host, name):
+def get_click_df(sc, d_clicks, sqlContext, name):
     from pyspark.sql import Row
 
-    click_rdd = get_click_rdd(sc, d_all_clicks, day, host)
+    click_rdd = get_click_rdd(sc, d_clicks)
     click_row_rdd = click_rdd.map(lambda x: Row(key=x[0], click_data=x[1])) 
     clickDF = sqlContext.createDataFrame(click_row_rdd)
     clickDF.registerTempTable(name)
@@ -263,21 +223,11 @@ def get_random_time_list():
 
 ###### Join Click Traces and Survey Responses #####
 
-def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces', start = '2016-03-01', stop = '2016-03-08'):
+def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces'):
     """
     Loads all join_data.tsvs for the given timespan into a single df.
     """
-    dfs = []
-    
-    days = [str(day) for day in pd.date_range(start,stop)] 
-    
-    for host in ('en.wikipedia.org', 'en.m.wikipedia.org'):
-        for day in days:
-            partition = get_partition_name(day, host)
-            dfs.append(pd.read_csv(os.path.join(directory, version, partition, 'join_data.tsv'), sep = '\t'))
-    
-    
-    df =  pd.concat(dfs)
+    df =  pd.read_csv(os.path.join(directory, version, 'join_data.tsv'), sep = '\t')
     df['geo_data'] = df['geo_data'].apply(lambda x: ast.literal_eval(x))
     df['requests'] = df['requests'].apply(lambda x: ast.literal_eval(x))
     df['click_data'] = df['click_data'].apply(lambda x: ast.literal_eval(x))

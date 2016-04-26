@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from stats_utils import *
+import numpy as np
 
 def get_std_err(num_events, num_trials):
     dist =  get_beta_dist(num_events, num_trials, num_samples = 5000)
@@ -36,12 +37,13 @@ def get_upper_std_err_series(s):
 
 def plot_proportion(d, x, hue, title,  xorder = None, dropna_x = True, dropna_hue = True, rotate = False, normx = True):
     
+
     if dropna_x:
         d = d[d[x] != 'no response']
     else:
         xorder.append('no response')
         
-    if dropna_hue:
+    if hue and dropna_hue:
         d = d[d[hue] != 'no response']
     
     if not normx:
@@ -84,6 +86,57 @@ def plot_proportion(d, x, hue, title,  xorder = None, dropna_x = True, dropna_hu
     
     if rotate:
         plt.xticks(rotation=45) 
+
+
+def plot_metric(d, x, y,
+                hue = None,
+                title = '',
+                xorder = None,
+                dropna_x = True,
+                dropna_hue = True,
+                rotate = False,
+                estimator = np.mean, 
+                ci = 95, 
+                kind  = 'bar'):
+    
+
+    if dropna_x:
+        #d = d.dropna(subset=x)
+        d = d[d[x] != 'no response']
+    else:
+        xorder.append('no response')
+        
+    if hue and dropna_hue:
+        #d = d.dropna(subset=hue)
+        d = d[d[hue] != 'no response']
+        
+    if kind == 'bar':
+        fig = sns.barplot(
+                    x = x,
+                    y = y,
+                    data=d,
+                    hue = hue,
+                    order = xorder,
+                    color = (0.54308344686732579, 0.73391773700714114, 0.85931565621319939),
+                    estimator = estimator,
+                    ci = ci
+                    )
+    else:
+        fig = sns.boxplot(
+                x = x,
+                y = y,
+                data=d,
+                hue = hue,
+                order = xorder,
+                color = (0.54308344686732579, 0.73391773700714114, 0.85931565621319939),
+                fliersize = 0
+                )
+    plt.title(title)
+    
+    if rotate:
+        plt.xticks(rotation=45)
+
+
 
 def plot_over_time(d, x, xticks, hue, hue_order, figsize, xlim ):
     plt.figure(figsize = figsize)

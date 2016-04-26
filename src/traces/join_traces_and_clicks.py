@@ -1,6 +1,6 @@
 from pyspark import SparkConf, SparkContext
 from pyspark.sql import SQLContext, Row
-from trace_utils import get_partition_name, get_click_df, get_all_clicks, parse_geo, article_in_trace
+from trace_utils import get_click_df, get_clicks
 import pandas as pd
 import argparse
 import os
@@ -21,24 +21,13 @@ spark-submit \
     --executor-cores 4 \
     --queue priority \
 join_traces_and_clicks.py \
-    --start 2016-03-01 \
-    --stop 2016-03-08 \
-    --input_dir /user/ellery/readers/data/hashed_traces/rs3v2 \
-    --output_dir /home/ellery/readers/data/click_traces/rs3v2 
+    --input_dir /user/ellery/readers/data/hashed_traces/test \
+    --output_dir /home/ellery/readers/data/click_traces/test 
 """
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--start', required=True, 
-        help='start day'
-    )
-
-    parser.add_argument(
-        '--stop', required=True, 
-        help='start day'
-    )
 
     parser.add_argument(
         '--input_dir', required=True, 
@@ -53,10 +42,6 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
 
-    start = args.start 
-    stop  = args.stop
-    days = [str(day) for day in pd.date_range(start,stop)] 
-
     input_dir = args.input_dir
     output_dir = args.output_dir
     
@@ -65,75 +50,66 @@ if __name__ == '__main__':
     sc = SparkContext(conf=conf, pyFiles=[])
     sqlContext = SQLContext(sc)
 
-    count_df = {}
 
-    d_all_clicks = get_all_clicks()
+    d_clicks = get_clicks()
 
-    for host in ('en.wikipedia.org', 'en.m.wikipedia.org'):
-        count_df[host] = {}
-        for day in days:
-            print('Processing', host,  day)
-            partition = get_partition_name(day, host)
-            input_partition = os.path.join(input_dir, partition)
-            output_partition = os.path.join(output_dir, partition)
+    
+    trace_rdd = sc.textFile(input_dir) \
+        .map(lambda x: json.loads(x)) \
+        .filter(lambda x: len(x) == 5) \
+        .map(lambda x: Row(key=x['ip'] + x['ua'], requests=x['requests'], geo_data=x['geo_data'], ua_data=x['ua_data']))
+    
+    print(trace_rdd.take(1))
 
-            print('Input Partition: ', input_partition)
-            trace_rdd = sc.textFile(input_partition) \
-                .map(lambda x: json.loads(x)) \
-                .filter(lambda x: len(x) == 4) \
-                .map(lambda x: Row(key=x['ip'] + x['ua'], requests=x['requests'], geo_data=x['geo_data']))
-            
-            print(trace_rdd.take(1))
+    traceDF = sqlContext.createDataFrame(trace_rdd)
+    traceDF.registerTempTable("traceDF")
 
-            traceDF = sqlContext.createDataFrame(trace_rdd)
-            traceDF.registerTempTable("traceDF")
+    clickDF = get_click_df(sc, d_clicks, sqlContext, 'clickDF')
 
-            clickDF = get_click_df(sc, d_all_clicks, sqlContext, day,host, 'clickDF')
+    query = """
+    SELECT *
+    FROM traceDF JOIN clickDF
+    WHERE clickDF.key = traceDF.key
+    """
+    res = sqlContext.sql(query).collect()
 
-            query = """
-            SELECT *
-            FROM traceDF JOIN clickDF
-            WHERE clickDF.key = traceDF.key
-            """
-            res = sqlContext.sql(query).collect()
+    click_traces = []
+    for row in res:
+        d = {'key': row.key, 'requests': row.requests, 'click_data':row.click_data, 'geo_data': row.geo_data, 'ua_data' : row.ua_data}
+        click_traces.append(d)
 
-            click_traces = []
-            for row in res:
-                d = {'key': row.key, 'requests': row.requests, 'click_data':row.click_data, 'geo_data': row.geo_data}
-                click_traces.append(d)
+    json_outfile = os.path.join(output_dir, 'join_data.json')
+    tsv_outfile = os.path.join(output_dir, 'join_data.tsv')
 
-            json_outfile = os.path.join(output_partition, 'join_data.json')
-            tsv_outfile = os.path.join(output_partition, 'join_data.tsv')
-
-            try:
-                os.makedirs( output_partition )
-            except:
-                print(traceback.format_exc())
+    try:
+        os.makedirs( output_dir )
+    except:
+        print(traceback.format_exc())
 
 
-            df = pd.DataFrame(click_traces)
-            # parse geo data map
-            df['geo_data'] = df['geo_data'].apply(parse_geo)
-            # keep only (request, click_data pairs) where the article clicked on is in the trace
-            df_clean = df[df.apply(article_in_trace, axis=1)].copy()
-            df_clean['survey_token'] = df_clean['click_data'].apply(lambda x: x['survey_token'])
-            # drop any rows with the same token.
-            df_clean.drop_duplicates(inplace = True, subset = 'survey_token',  keep = False)
+    df = pd.DataFrame(click_traces)
+    # keep only (request, click_data pairs) where the article clicked on is in the trace
+    def article_in_trace(r):
+        page = r['click_data']['title']
+        return page in [e['title'] for e in r['requests']]
 
-            df_clean.to_csv(tsv_outfile, sep = '\t', index=False)
-            json.dump(click_traces, open(json_outfile, 'w'))
+    df_clean = df[df.apply(article_in_trace, axis=1)].copy()
+    df_clean['survey_token'] = df_clean['click_data'].apply(lambda x: x['survey_token'])
+    # drop any rows with the same token.
+    df_clean.drop_duplicates(inplace = True, subset = 'survey_token',  keep = False)
 
-            nclicks = int(sqlContext.sql("SELECT COUNT(*) as n FROM clickDF ").collect()[0].n)
-            joinSize = len(click_traces)
-            cleanSize = df_clean.shape[0]
-            status = '# Clicks: %d Join Size: %d Clean Size %d' % (nclicks, joinSize, cleanSize)
-            print(status)
-            count_df[host][day] = status
-            sqlContext.dropTempTable('traceDF')
-            sqlContext.dropTempTable('clickDF')
+    df_clean.to_csv(tsv_outfile, sep = '\t', index=False)
+    json.dump(click_traces, open(json_outfile, 'w'))
+
+    nclicks = int(sqlContext.sql("SELECT COUNT(*) as n FROM clickDF ").collect()[0].n)
+    joinSize = len(click_traces)
+    cleanSize = df_clean.shape[0]
+    status = '# Clicks: %d Join Size: %d Clean Size %d' % (nclicks, joinSize, cleanSize)
+    print(status)
+    sqlContext.dropTempTable('traceDF')
+    sqlContext.dropTempTable('clickDF')
 
 
-    pprint(count_df)
 
 
 

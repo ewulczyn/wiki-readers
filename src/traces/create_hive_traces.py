@@ -3,15 +3,15 @@ import pandas as pd
 import os
 import sys
 import inspect
-from trace_utils import create_hive_trace_table, add_day_to_hive_trace_table
+from trace_utils import create_hive_trace_table
 
 """
 USAGE:
 python create_hive_traces.py \
 --start 2016-03-01 \
---stop 2016-03-08 \
+--stop 2016-03-01 \
 --db traces \
---table rs3v2 \
+--table test \
 --priority
 """
 
@@ -45,13 +45,4 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args()
-
-
-    create_hive_trace_table(args.db, args.table, local = False)
-
-    start = args.start 
-    stop  = args.stop
-    days = [str(day) for day in pd.date_range(start,stop)] 
-    for day in days:
-        print('Adding Traces From: ', day)
-        add_day_to_hive_trace_table(args.db, args.table, day, local = False, priority = args.priority)
+    create_hive_trace_table(args.db, args.table, args.start, args.stop, local = False, priority = args.priority)
