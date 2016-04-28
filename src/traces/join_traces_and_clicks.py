@@ -1,6 +1,6 @@
 from pyspark import SparkConf, SparkContext
 from pyspark.sql import SQLContext, Row
-from trace_utils import get_partition_name, get_click_df, get_all_clicks, parse_geo, article_in_trace
+from trace_utils import get_partition_name, get_click_df, get_all_clicks
 import pandas as pd
 import argparse
 import os
@@ -80,8 +80,8 @@ if __name__ == '__main__':
             print('Input Partition: ', input_partition)
             trace_rdd = sc.textFile(input_partition) \
                 .map(lambda x: json.loads(x)) \
-                .filter(lambda x: len(x) == 4) \
-                .map(lambda x: Row(key=x['ip'] + x['ua'], requests=x['requests'], geo_data=x['geo_data']))
+                .filter(lambda x: len(x) == 5) \
+                .map(lambda x: Row(key=x['ip'] + x['ua'], requests=x['requests'], geo_data=x['geo_data'], ua_data=x['ua_data']))
             
             print(trace_rdd.take(1))
 
@@ -99,11 +99,10 @@ if __name__ == '__main__':
 
             click_traces = []
             for row in res:
-                d = {'key': row.key, 'requests': row.requests, 'click_data':row.click_data, 'geo_data': row.geo_data}
+                d = {'key': row.key, 'requests': row.requests, 'click_data':row.click_data, 'geo_data': row.geo_data, 'ua_data' : row.ua_data}
                 click_traces.append(d)
 
             json_outfile = os.path.join(output_partition, 'join_data.json')
-            tsv_outfile = os.path.join(output_partition, 'join_data.tsv')
 
             try:
                 os.makedirs( output_partition )
@@ -111,27 +110,14 @@ if __name__ == '__main__':
                 print(traceback.format_exc())
 
 
-            df = pd.DataFrame(click_traces)
-            # parse geo data map
-            df['geo_data'] = df['geo_data'].apply(parse_geo)
-            # keep only (request, click_data pairs) where the article clicked on is in the trace
-            df_clean = df[df.apply(article_in_trace, axis=1)].copy()
-            df_clean['survey_token'] = df_clean['click_data'].apply(lambda x: x['survey_token'])
-            # drop any rows with the same token.
-            df_clean.drop_duplicates(inplace = True, subset = 'survey_token',  keep = False)
-
-            df_clean.to_csv(tsv_outfile, sep = '\t', index=False)
             json.dump(click_traces, open(json_outfile, 'w'))
 
             nclicks = int(sqlContext.sql("SELECT COUNT(*) as n FROM clickDF ").collect()[0].n)
             joinSize = len(click_traces)
-            cleanSize = df_clean.shape[0]
-            status = '# Clicks: %d Join Size: %d Clean Size %d' % (nclicks, joinSize, cleanSize)
+            status = '# Clicks: %d Join Size: %d Clean Size %d' % (nclicks, joinSize)
             print(status)
             count_df[host][day] = status
-            sqlContext.dropTempTable('traceDF')
-            sqlContext.dropTempTable('clickDF')
-
+            
 
     pprint(count_df)
 

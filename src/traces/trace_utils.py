@@ -9,7 +9,7 @@ import pymysql
 import pandas as pd
 import ast
 import datetime
-import pytz, datetime, dateutil
+import json
 
 ##########  HIVE Traces ###################
 
@@ -22,10 +22,9 @@ def create_hive_trace_table(db_name, table_name, local = True):
     CREATE TABLE IF NOT EXISTS %(db_name)s.%(table_name)s (
         ip STRING,
         ua STRING,
-        xff STRING,
-        requests STRING,
-        geocoded_data MAP<STRING,STRING>
-
+        geocoded_data MAP<STRING,STRING>,
+        user_agent_map MAP<STRING,STRING>,
+        requests STRING
     )
     PARTITIONED BY (year INT, month INT, day INT, host STRING)
     ROW FORMAT DELIMITED
@@ -33,13 +32,12 @@ def create_hive_trace_table(db_name, table_name, local = True):
     STORED AS TEXTFILE
     """
 
-
     params = {'db_name': db_name, 'table_name': table_name}
 
     if local:
         execute_hive_expression(query % params)
     else: 
-        exec_hive_stat2(query % params)
+        exec_hive(query % params)
 
 
 def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority = True):
@@ -50,64 +48,66 @@ def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority
     SELECT
         client_ip,
         user_agent,
-        x_forwarded_for,
-        CONCAT_WS('||', COLLECT_LIST(request)) AS requests,
         geocoded_data,
+        user_agent_map,
+        CONCAT_WS('REQUEST_DELIM', COLLECT_LIST(request)) AS requests,
         uri_host AS host
     FROM
         (SELECT
             client_ip,
             user_agent,
-            x_forwarded_for,
-            CONCAT(ts, '|', referer, '|', title ) AS request,
             geocoded_data,
+            user_agent_map,
+            CONCAT( 'ts|', ts,
+                    '|referer|', referer,
+                    '|title|', title,
+                    '|uri_path|', reflect('java.net.URLDecoder', 'decode', uri_path),
+                    '|uri_query|', reflect('java.net.URLDecoder', 'decode', uri_query),
+                    '|is_pageview|', is_pageview,
+                    '|access_method|', access_method,
+                    '|referer_class|', referer_class,
+                    '|project|', normalized_host.project_class,
+                    '|lang|', normalized_host.project
+                ) AS request,
             uri_host
+        FROM
+            (SELECT
+                c.*,
+                CASE
+                    WHEN NOT is_pageview THEN NULL
+                    WHEN rd_to IS NULL THEN raw_title
+                    ELSE rd_to
+                END AS title
             FROM
                 (SELECT
-                    client_ip,
-                    user_agent,
-                    x_forwarded_for,
-                    ts, 
-                    referer,
-                    geocoded_data,
-                    uri_host,
+                    w.*,
                     CASE
-                        WHEN rd_to IS NULL THEN raw_title
-                        ELSE rd_to
-                    END AS title
+                        WHEN is_pageview THEN pageview_info['page_title']
+                        ELSE round(RAND(), 5) 
+                    END AS raw_title
                 FROM
-                    (SELECT
-                        client_ip,
-                        user_agent,
-                        x_forwarded_for,
-                        ts, 
-                        referer,
-                        REGEXP_EXTRACT(reflect('java.net.URLDecoder', 'decode', uri_path), '/wiki/(.*)', 1) as raw_title,
-                        geocoded_data,
-                        uri_host
-                    FROM
-                        wmf.webrequest
-                    WHERE 
-                        is_pageview
-                        AND webrequest_source = 'text'
-                        AND agent_type = 'user'
-                        AND %(time_conditions)s
-                        AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
-                        AND LENGTH(REGEXP_EXTRACT(reflect('java.net.URLDecoder', 'decode', uri_path), '/wiki/(.*)', 1)) > 0
-                    ) c
-                LEFT JOIN
-                    traces.en_redirect r
-                ON c.raw_title = r.rd_from
-                ) b
-            ) a
+                    wmf.webrequest w
+                WHERE 
+                    webrequest_source = 'text'
+                    AND agent_type = 'user'
+                    AND %(time_conditions)s
+                    AND access_method != 'mobile app'
+                    AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
+                ) c
+            LEFT JOIN
+                traces.en_redirect r
+            ON c.raw_title = r.rd_from
+            ) b
+        ) a
+
     GROUP BY
         client_ip,
         user_agent,
-        x_forwarded_for,
         geocoded_data,
+        user_agent_map,
         uri_host
     HAVING 
-        COUNT(*) < 500
+        COUNT(*) < 500;
     """
 
     day_dt = dateutil.parser.parse(day)
@@ -250,41 +250,7 @@ def get_partition_name(day, host):
     return fname
 
 
-
-# generate random sequence of times
-def get_random_time_list():
-    dt = parse_date('2016-03-01')
-    times = [dt]
-    for i in range(10):
-        n = random.randint(0,60)
-        times.append(times[-1] + datetime.timedelta(minutes=n))
-    return times
-
-
-###### Join Click Traces and Survey Responses #####
-
-def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces', start = '2016-03-01', stop = '2016-03-08'):
-    """
-    Loads all join_data.tsvs for the given timespan into a single df.
-    """
-    dfs = []
-    
-    days = [str(day) for day in pd.date_range(start,stop)] 
-    
-    for host in ('en.wikipedia.org', 'en.m.wikipedia.org'):
-        for day in days:
-            partition = get_partition_name(day, host)
-            dfs.append(pd.read_csv(os.path.join(directory, version, partition, 'join_data.tsv'), sep = '\t'))
-    
-    
-    df =  pd.concat(dfs)
-    df['geo_data'] = df['geo_data'].apply(lambda x: ast.literal_eval(x))
-    df['requests'] = df['requests'].apply(lambda x: ast.literal_eval(x))
-    df['click_data'] = df['click_data'].apply(lambda x: ast.literal_eval(x))
-    return df
-
-
-
+### Join Survey and Traces
 
 def recode_host(h):
     if h == 'en.m.wikipedia.org':
@@ -318,30 +284,110 @@ def load_survey_dfs(survey_file = '../../data/responses.tsv'):
     d_survey_in_el = d_survey.merge(d_click, how = 'inner', on = 'token')
 
     return d_survey, d_survey_in_el
+
+
+def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces', start = '2016-03-01', stop = '2016-03-08'):
+    """
+    Loads all join_data.tsvs for the given timespan into a single df.
+    """
+    dfs = []
     
-def utc_to_local(dt, timezone):
-    utc_dt = pytz.utc.localize(dt, is_dst=None)
-    try:
-        return  utc_dt.astimezone (pytz.timezone (timezone) )
-    except:
-        return None
+    days = [str(day) for day in pd.date_range(start,stop)] 
 
-def get_joined_survey_and_traces(d_traces, d_survey_in_el):
+    for host in ('en.wikipedia.org', 'en.m.wikipedia.org'):
+        for day in days:
+            partition = get_partition_name(day, host)
+            path = os.path.join(directory, version, partition, 'join_data.json')
+            df = pd.DataFrame(json.load(open(path)))
+            dfs.append(df)
+
+    df =  pd.concat(dfs)
+
+    df_clean = df[df.apply(article_in_trace, axis=1)].copy()
+    df_clean['survey_token'] = df_clean['click_data'].apply(lambda x: x['survey_token'])
+    # drop any rows with the same token.
+    df_clean.drop_duplicates(inplace = True, subset = 'survey_token',  keep = False)
+    df_clean.drop_duplicates(inplace = True, subset = 'key',  keep = False)
+    return df_clean
+
+
+def article_in_trace(r):
+    page = r['click_data']['title']
+    return page in [e['title'] for e in r['requests']]
+
+
+def parse_trace_ts(trace):
+    clean = []
+    for r in trace:
+        try:
+            r['ts'] = datetime.datetime.strptime(r['ts'], '%Y-%m-%d %H:%M:%S')
+            clean.append(r)
+        except:
+            pass
+    return clean
+
+
+def trace_ts_to_str(trace):
+    clean = []
+    for r in trace:
+        r['ts'] = datetime.datetime.strftime(r['ts'], '%Y-%m-%d %H:%M:%S')
+        clean.append(r)
+    return clean
+
+
+def get_random_time_list():
+    dt = parse_date('2016-03-01')
+    times = [dt]
+    for i in range(10):
+        n = random.randint(0,60)
+        times.append(times[-1] + datetime.timedelta(minutes=n))
+    return times
+
+
+def sessionize(trace):
     """
-    Join click traces and survey data in EL
+    Break trace whenever
+    there is 30 min gap between requests
     """
-    dt = d_survey_in_el.merge(d_traces, how = 'inner', right_on = 'survey_token', left_on = 'token')
-    dt['utc_click_dt'] = dt['click_data'].apply(lambda x: datetime.datetime.strptime (x['timestamp'], "%Y-%m-%d %H:%M:%S"))
-    dt['local_click_dt'] = dt.apply(lambda x: utc_to_local(x['utc_click_dt'], x['geo_data']['timezone']), axis = 1)
-    del dt['token']
-    dt.rename(columns={  'submit_timestamp': 'survey_submit_dt',
-                         'key': 'client_token',
-                         'requests': 'trace_data',
-                        },
-              inplace=True)
+    sessions = []
+    session = [trace[0]]
+    for r in trace[1:]:
+        d = r['ts'] -  session[-1]['ts']
+        if d > datetime.timedelta(minutes=60):
+            sessions.append(session)
+            session = [r,]
+        else:
+            session.append(r)
 
-    dt['utc_click_dt'] = dt['utc_click_dt'].apply(lambda x: datetime.datetime.strftime (x, "%Y-%m-%d %H:%M:%S"))
-    dt['local_click_dt'] = dt['local_click_dt'].apply(lambda x:  datetime.datetime.strftime (x, "%Y-%m-%d %H:%M:%S") if x else x)
+    sessions.append(session)
+    return sessions 
+
+def get_click_session(r):
+    
+    title = r['click_title']
+    sessions = [s for s in r['sessions'] if (title in [e['title'] for e in s])]
+    click_ts = r['click_dt_utc']
+    times = [get_candidate_time(click_ts, title, s) for s in sessions]
+    min_index = times.index(min(times))
+    r['click_session'] = sessions[min_index]
+    
+    return r
+
+def get_candidate_time(click_ts, title, session):
+    requests = [r for r in session if r['title'] == title]
+    times = [abs((click_ts - r['ts']).total_seconds()) for r in requests]
+    return min(times)
 
 
-    return dt
+def load_responses_with_traces(path = '../../data/responses_with_traces.tsv'):
+    df = pd.read_csv(path, sep = '\t', parse_dates = False)
+    df['geo_data'] = df['geo_data'].apply(eval)
+    df['trace_data'] = df['trace_data'].apply(eval)
+    df['sessions'] = df['sessions'].apply(eval)
+    df['click_session'] = df['click_session'].apply(eval)
+    df['ua_data'] = df['ua_data'].apply(eval)
+    df['click_dt_utc'] = df['click_dt_utc'].apply(lambda x: datetime.datetime.strptime(x, '%Y-%m-%d %H:%M:%S'))
+    df['survey_submit_dt'] = df['survey_submit_dt'].apply(lambda x: datetime.datetime.strptime(x, '%Y-%m-%d %H:%M:%S'))
+    df['trace_data'] = df['trace_data'].apply(parse_trace_ts)
+    df['click_session'] = df['click_session'].apply(parse_trace_ts)
+    return df

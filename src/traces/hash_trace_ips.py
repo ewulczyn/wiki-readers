@@ -28,6 +28,14 @@ hash_trace_ips.py \
 """
 
 # WARNING THESE FUNCTIONS ARE DUPLICATED IN trace_utils.py
+def parse_hive_struct(s):
+    d = {}
+    for e in s.split('\x02'):
+        if '\x03' in e:
+            k,v = e.split('\x03')
+            d[k] = v
+    return d
+
 def parse_row(line):
     row = line.strip().split('\t')
     if len(row) !=5:
@@ -35,19 +43,22 @@ def parse_row(line):
     
     d = {'ip': row[0],
          'ua': row[1],
-         'requests' : parse_requests(row[3]),
-         'geo_data' : row[4]
+         'geo_data' : parse_hive_struct(row[2]),
+         'ua_data' : parse_hive_struct(row[3]),
+         'requests' : parse_requests(row[4])
         }
     return d
 
+
 def parse_requests(requests):
     ret = []
-    for r in requests.split('||'):
+    for r in requests.split('REQUEST_DELIM'):
         t = r.split('|')
-        if len(t) != 3:
+        if (len(t) % 2) != 0: # should be list of (name, value) pairs and contain at least id,ts,title
             continue
-        ret.append({'t': t[0], 'r': t[1], 'p': t[2]})
-    ret.sort(key = lambda x: x['t']) # sort by time
+        data_dict = {t[i]:t[i+1] for i in range(0, len(t), 2) }
+        ret.append(data_dict)
+    ret.sort(key = lambda x: x['ts']) # sort by time
     return ret
 
 
