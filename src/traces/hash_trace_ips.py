@@ -15,16 +15,19 @@ spark-submit \
     --driver-memory 5g \
     --master yarn \
     --deploy-mode client \
-    --num-executors 20 \
-    --executor-memory 2g \
+    --num-executors 4 \
+    --executor-memory 10g \
     --executor-cores 4 \
     --queue priority \
 hash_trace_ips.py \
-    --input_dir /user/hive/warehouse/traces.db/test \
-    --output_dir /user/ellery/readers/data/hashed_traces/test \
+    --start 2016-03-01 \
+    --stop 2016-03-08 \
+    --input_dir /user/hive/warehouse/traces.db/rs3v2 \
+    --output_dir /user/ellery/readers/data/hashed_traces/rs3v2 \
     --key 
 """
 
+# WARNING THESE FUNCTIONS ARE DUPLICATED IN trace_utils.py
 def parse_hive_struct(s):
     d = {}
     for e in s.split('\x02'):
@@ -62,6 +65,15 @@ def parse_requests(requests):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--start', required=True, 
+        help='start day'
+    )
+
+    parser.add_argument(
+        '--stop', required=True, 
+        help='start day'
+    )
 
     parser.add_argument(
         '--input_dir', required=True, 
@@ -81,6 +93,9 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    start = args.start 
+    stop  = args.stop
+    days = [str(day) for day in pd.date_range(start,stop)] 
 
     input_dir = args.input_dir
     output_dir = args.output_dir
@@ -97,25 +112,16 @@ if __name__ == '__main__':
         x['ip'] = hashed_ip
         return x
 
-    
-    trace_rdd = sc.textFile(input_dir) \
-        .map(parse_row) \
-        .filter(lambda x: x is not None) \
-        .map(hash_ip) \
-        .map(lambda x: json.dumps(x))         
-    os.system('hadoop fs -rm -r ' + output_dir)
-    trace_rdd.saveAsTextFile(output_dir)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    for host in ('en.wikipedia.org', 'en.m.wikipedia.org'):
+        for day in days:
+            print('Processing', host,  day)
+            partition = get_partition_name(day, host)
+            input_partition = os.path.join(input_dir, partition)
+            output_partition = os.path.join(output_dir, partition )
+            trace_rdd = sc.textFile(input_partition) \
+                .map(parse_row) \
+                .filter(lambda x: x is not None) \
+                .map(hash_ip) \
+                .map(lambda x: json.dumps(x))         
+            os.system('hadoop fs -rm -r ' + output_partition)
+            trace_rdd.saveAsTextFile(output_partition)

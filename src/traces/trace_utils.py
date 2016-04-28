@@ -9,93 +9,114 @@ import pymysql
 import pandas as pd
 import ast
 import datetime
-import pytz, datetime, dateutil
+import json
 
 ##########  HIVE Traces ###################
 
 
-def create_hive_trace_table(db_name, table_name, start, stop, local = True, priority = True):
+def create_hive_trace_table(db_name, table_name, local = True):
+    """
+    Create a Table partitioned by day and host
+    """
+    query = """
+    CREATE TABLE IF NOT EXISTS %(db_name)s.%(table_name)s (
+        ip STRING,
+        ua STRING,
+        geocoded_data MAP<STRING,STRING>,
+        user_agent_map MAP<STRING,STRING>,
+        requests STRING
+    )
+    PARTITIONED BY (year INT, month INT, day INT, host STRING)
+    ROW FORMAT DELIMITED
+    FIELDS TERMINATED BY '\t'
+    STORED AS TEXTFILE
+    """
+
+    params = {'db_name': db_name, 'table_name': table_name}
+
+    if local:
+        execute_hive_expression(query % params)
+    else: 
+        exec_hive(query % params)
+
+
+def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority = True):
 
     query = """
-
-    SET mapreduce.task.timeout=6000000;
-    DROP TABLE IF EXISTS %(db_name)s.%(table_name)s_requests;
-    CREATE TABLE %(db_name)s.%(table_name)s_requests
-    ROW FORMAT DELIMITED
-    FIELDS TERMINATED BY '\t'
-    STORED AS TEXTFILE
-    AS SELECT
+    INSERT OVERWRITE TABLE %(db_name)s.%(table_name)s
+    PARTITION(year=%(year)d, month=%(month)d, day =%(day)d, host)
+    SELECT
         client_ip,
         user_agent,
         geocoded_data,
         user_agent_map,
-        CONCAT( 'ts|', ts,
-                '|referer|', referer,
-                '|title|', title,
-                '|uri_host|', uri_host,
-                '|uri_path|', reflect('java.net.URLDecoder', 'decode', uri_path),
-                '|uri_query|', reflect('java.net.URLDecoder', 'decode', uri_query),
-                '|is_pageview|', is_pageview,
-                '|access_method|', access_method,
-                '|referer_class|', referer_class,
-                '|project|', normalized_host.project_class,
-                '|lang|', normalized_host.project
-            ) AS request
+        CONCAT_WS('REQUEST_DELIM', COLLECT_LIST(request)) AS requests,
+        uri_host AS host
     FROM
         (SELECT
-            c.*,
-            CASE
-                WHEN NOT is_pageview THEN NULL
-                WHEN rd_to IS NULL THEN raw_title
-                ELSE rd_to
-            END AS title
+            client_ip,
+            user_agent,
+            geocoded_data,
+            user_agent_map,
+            CONCAT( 'ts|', ts,
+                    '|referer|', referer,
+                    '|title|', title,
+                    '|uri_path|', reflect('java.net.URLDecoder', 'decode', uri_path),
+                    '|uri_query|', reflect('java.net.URLDecoder', 'decode', uri_query),
+                    '|is_pageview|', is_pageview,
+                    '|access_method|', access_method,
+                    '|referer_class|', referer_class,
+                    '|project|', normalized_host.project_class,
+                    '|lang|', normalized_host.project
+                ) AS request,
+            uri_host
         FROM
             (SELECT
-                w.*,
+                c.*,
                 CASE
-                    WHEN is_pageview THEN pageview_info['page_title']
-                    ELSE round(RAND(), 5) 
-                END AS raw_title
+                    WHEN NOT is_pageview THEN NULL
+                    WHEN rd_to IS NULL THEN raw_title
+                    ELSE rd_to
+                END AS title
             FROM
-                wmf.webrequest w
-            WHERE 
-                webrequest_source = 'text'
-                AND agent_type = 'user'
-                AND %(time_conditions)s
-                AND access_method != 'mobile app'
-                AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
-            ) c
-        LEFT JOIN
-            traces.en_redirect r
-        ON c.raw_title = r.rd_from
-        ) b;
-    
-    SET mapreduce.task.timeout=6000000;
-    DROP TABLE IF EXISTS %(db_name)s.%(table_name)s;
-    CREATE TABLE %(db_name)s.%(table_name)s
-    ROW FORMAT DELIMITED
-    FIELDS TERMINATED BY '\t'
-    STORED AS TEXTFILE
-    AS SELECT
-        client_ip,
-        user_agent,
-        geocoded_data,
-        user_agent_map,
-        CONCAT_WS('REQUEST_DELIM', COLLECT_LIST(request)) AS requests
-    FROM
-        %(db_name)s.%(table_name)s_requests
+                (SELECT
+                    w.*,
+                    CASE
+                        WHEN is_pageview THEN pageview_info['page_title']
+                        ELSE round(RAND(), 5) 
+                    END AS raw_title
+                FROM
+                    wmf.webrequest w
+                WHERE 
+                    webrequest_source = 'text'
+                    AND agent_type = 'user'
+                    AND %(time_conditions)s
+                    AND access_method != 'mobile app'
+                    AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
+                ) c
+            LEFT JOIN
+                traces.en_redirect r
+            ON c.raw_title = r.rd_from
+            ) b
+        ) a
     GROUP BY
         client_ip,
         user_agent,
         geocoded_data,
-        user_agent_map
+        user_agent_map,
+        uri_host
     HAVING 
-        COUNT(*) < 1000;
+        COUNT(*) < 500;
     """
 
-    params = {  'time_conditions': get_hive_timespan(start, stop, hour = False),
+    day_dt = dateutil.parser.parse(day)
+
+    params = {  'time_conditions': get_hive_timespan(day, day, hour = False),
                 'db_name': db_name,
                 'table_name': table_name,
+                'year' : day_dt.year,
+                'month': day_dt.month,
+                'day': day_dt.day
                 }
 
     if local:
@@ -235,6 +256,7 @@ def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/dat
 
 
 
+### Join Survey and Traces
 
 def recode_host(h):
     if h == 'en.m.wikipedia.org':
@@ -268,30 +290,110 @@ def load_survey_dfs(survey_file = '../../data/responses.tsv'):
     d_survey_in_el = d_survey.merge(d_click, how = 'inner', on = 'token')
 
     return d_survey, d_survey_in_el
+
+
+def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces', start = '2016-03-01', stop = '2016-03-08'):
+    """
+    Loads all join_data.tsvs for the given timespan into a single df.
+    """
+    dfs = []
     
-def utc_to_local(dt, timezone):
-    utc_dt = pytz.utc.localize(dt, is_dst=None)
-    try:
-        return  utc_dt.astimezone (pytz.timezone (timezone) )
-    except:
-        return None
+    days = [str(day) for day in pd.date_range(start,stop)] 
 
-def get_joined_survey_and_traces(d_traces, d_survey_in_el):
+    for host in ('en.wikipedia.org', 'en.m.wikipedia.org'):
+        for day in days:
+            partition = get_partition_name(day, host)
+            path = os.path.join(directory, version, partition, 'join_data.json')
+            df = pd.DataFrame(json.load(open(path)))
+            dfs.append(df)
+
+    df =  pd.concat(dfs)
+
+    df_clean = df[df.apply(article_in_trace, axis=1)].copy()
+    df_clean['survey_token'] = df_clean['click_data'].apply(lambda x: x['survey_token'])
+    # drop any rows with the same token.
+    df_clean.drop_duplicates(inplace = True, subset = 'survey_token',  keep = False)
+    df_clean.drop_duplicates(inplace = True, subset = 'key',  keep = False)
+    return df_clean
+
+
+def article_in_trace(r):
+    page = r['click_data']['title']
+    return page in [e['title'] for e in r['requests']]
+
+
+def parse_trace_ts(trace):
+    clean = []
+    for r in trace:
+        try:
+            r['ts'] = datetime.datetime.strptime(r['ts'], '%Y-%m-%d %H:%M:%S')
+            clean.append(r)
+        except:
+            pass
+    return clean
+
+
+def trace_ts_to_str(trace):
+    clean = []
+    for r in trace:
+        r['ts'] = datetime.datetime.strftime(r['ts'], '%Y-%m-%d %H:%M:%S')
+        clean.append(r)
+    return clean
+
+
+def get_random_time_list():
+    dt = parse_date('2016-03-01')
+    times = [dt]
+    for i in range(10):
+        n = random.randint(0,60)
+        times.append(times[-1] + datetime.timedelta(minutes=n))
+    return times
+
+
+def sessionize(trace, interval = 60):
     """
-    Join click traces and survey data in EL
+    Break trace whenever
+    there is interval minute gap between requests
     """
-    dt = d_survey_in_el.merge(d_traces, how = 'inner', right_on = 'survey_token', left_on = 'token')
-    dt['utc_click_dt'] = dt['click_data'].apply(lambda x: datetime.datetime.strptime (x['timestamp'], "%Y-%m-%d %H:%M:%S"))
-    dt['local_click_dt'] = dt.apply(lambda x: utc_to_local(x['utc_click_dt'], x['geo_data']['timezone']), axis = 1)
-    del dt['token']
-    dt.rename(columns={  'submit_timestamp': 'survey_submit_dt',
-                         'key': 'client_token',
-                         'requests': 'trace_data',
-                        },
-              inplace=True)
+    sessions = []
+    session = [trace[0]]
+    for r in trace[1:]:
+        d = r['ts'] -  session[-1]['ts']
+        if d > datetime.timedelta(minutes=interval):
+            sessions.append(session)
+            session = [r,]
+        else:
+            session.append(r)
 
-    dt['utc_click_dt'] = dt['utc_click_dt'].apply(lambda x: datetime.datetime.strftime (x, "%Y-%m-%d %H:%M:%S"))
-    dt['local_click_dt'] = dt['local_click_dt'].apply(lambda x:  datetime.datetime.strftime (x, "%Y-%m-%d %H:%M:%S") if x else x)
+    sessions.append(session)
+    return sessions 
+
+def get_click_session(r):
+    
+    title = r['click_title']
+    sessions = [s for s in r['sessions'] if (title in [e['title'] for e in s])]
+    click_ts = r['click_dt_utc']
+    times = [get_candidate_time(click_ts, title, s) for s in sessions]
+    min_index = times.index(min(times))
+    r['click_session'] = sessions[min_index]
+    
+    return r
+
+def get_candidate_time(click_ts, title, session):
+    requests = [r for r in session if r['title'] == title]
+    times = [abs((click_ts - r['ts']).total_seconds()) for r in requests]
+    return min(times)
 
 
-    return dt
+def load_responses_with_traces(path = '../../data/responses_with_traces.tsv'):
+    df = pd.read_csv(path, sep = '\t', parse_dates = False)
+    df['geo_data'] = df['geo_data'].apply(eval)
+    df['trace_data'] = df['trace_data'].apply(eval)
+    df['sessions'] = df['sessions'].apply(eval)
+    df['click_session'] = df['click_session'].apply(eval)
+    df['ua_data'] = df['ua_data'].apply(eval)
+    df['click_dt_utc'] = df['click_dt_utc'].apply(lambda x: datetime.datetime.strptime(x, '%Y-%m-%d %H:%M:%S'))
+    df['survey_submit_dt'] = df['survey_submit_dt'].apply(lambda x: datetime.datetime.strptime(x, '%Y-%m-%d %H:%M:%S'))
+    df['trace_data'] = df['trace_data'].apply(parse_trace_ts)
+    df['click_session'] = df['click_session'].apply(parse_trace_ts)
+    return df

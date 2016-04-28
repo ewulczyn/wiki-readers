@@ -13,7 +13,7 @@ python create_hive_traces.py \
 --start 2016-03-01 \
 --stop 2016-03-08 \
 --db traces \
---table rs3v2 \
+--table ${version} \
 --priority
 
 ```
@@ -31,8 +31,8 @@ spark-submit \
 hash_trace_ips.py \
     --start 2016-03-01 \
     --stop 2016-03-08 \
-    --input_dir /user/hive/warehouse/traces.db/rs3v2 \
-    --output_dir /user/ellery/readers/data/hashed_traces/rs3v2 \
+    --input_dir /user/hive/warehouse/traces.db/${version} \
+    --output_dir /user/ellery/readers/data/hashed_traces/${version} \
     --key
 ```
 3.  run `src/traces/join_traces_and_clicks.py`. This joins 'Yes' click events on the survey widget in EL with the hashed traces and outputs a `join_data.tsv` file for each day.
@@ -49,15 +49,15 @@ spark-submit \
 join_traces_and_clicks.py \
     --start 2016-03-01 \
     --stop 2016-03-08 \
-    --input_dir /user/ellery/readers/data/hashed_traces/rs3v2 \
-    --output_dir /home/ellery/readers/data/click_traces/rs3v2 
+    --input_dir /user/ellery/readers/data/hashed_traces/${version} \
+    --output_dir /home/ellery/readers/data/click_traces/${version} 
 ```
 
 ## Joining Survey Data and Traces
 1. copy click traces to local machine
 
 ```
-scp -r stat1002.eqiad.wmnet:/home/ellery/readers/data/click_traces/rs3v2 ~/readers/data/click_traces/
+scp -r stat1002.eqiad.wmnet:/home/ellery/readers/data/click_traces/${version} ~/readers/data/click_traces/
 ```
 
 2. run src/traces/Join Survey and Traces.ipynb. This generates repsonses_with_traces.tsv, which contains the survey responses for which we have traces.

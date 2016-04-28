@@ -1,6 +1,6 @@
 from pyspark import SparkConf, SparkContext
 from pyspark.sql import SQLContext, Row
-from trace_utils import get_click_df, get_clicks
+from trace_utils import get_partition_name, get_click_df, get_all_clicks
 import pandas as pd
 import argparse
 import os
@@ -21,13 +21,24 @@ spark-submit \
     --executor-cores 4 \
     --queue priority \
 join_traces_and_clicks.py \
-    --input_dir /user/ellery/readers/data/hashed_traces/test \
-    --output_dir /home/ellery/readers/data/click_traces/test 
+    --start 2016-03-01 \
+    --stop 2016-03-08 \
+    --input_dir /user/ellery/readers/data/hashed_traces/rs3v2 \
+    --output_dir /home/ellery/readers/data/click_traces/rs3v2 
 """
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--start', required=True, 
+        help='start day'
+    )
+
+    parser.add_argument(
+        '--stop', required=True, 
+        help='start day'
+    )
 
     parser.add_argument(
         '--input_dir', required=True, 
@@ -42,6 +53,10 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
 
+    start = args.start 
+    stop  = args.stop
+    days = [str(day) for day in pd.date_range(start,stop)] 
+
     input_dir = args.input_dir
     output_dir = args.output_dir
     
@@ -50,72 +65,60 @@ if __name__ == '__main__':
     sc = SparkContext(conf=conf, pyFiles=[])
     sqlContext = SQLContext(sc)
 
+    count_df = {}
 
-    d_clicks = get_clicks()
+    d_all_clicks = get_all_clicks()
 
-    
-    trace_rdd = sc.textFile(input_dir) \
-        .map(lambda x: json.loads(x)) \
-        .filter(lambda x: len(x) == 5) \
-        .map(lambda x: Row(key=x['ip'] + x['ua'], requests=x['requests'], geo_data=x['geo_data'], ua_data=x['ua_data']))
-    
-    print(trace_rdd.take(1))
+    for host in ('en.wikipedia.org', 'en.m.wikipedia.org'):
+        count_df[host] = {}
+        for day in days:
+            print('Processing', host,  day)
+            partition = get_partition_name(day, host)
+            input_partition = os.path.join(input_dir, partition)
+            output_partition = os.path.join(output_dir, partition)
 
-    traceDF = sqlContext.createDataFrame(trace_rdd)
-    traceDF.registerTempTable("traceDF")
+            print('Input Partition: ', input_partition)
+            trace_rdd = sc.textFile(input_partition) \
+                .map(lambda x: json.loads(x)) \
+                .filter(lambda x: len(x) == 5) \
+                .map(lambda x: Row(key=x['ip'] + x['ua'], requests=x['requests'], geo_data=x['geo_data'], ua_data=x['ua_data']))
+            
+            print(trace_rdd.take(1))
 
-    clickDF = get_click_df(sc, d_clicks, sqlContext, 'clickDF')
+            traceDF = sqlContext.createDataFrame(trace_rdd)
+            traceDF.registerTempTable("traceDF")
 
-    query = """
-    SELECT *
-    FROM traceDF JOIN clickDF
-    WHERE clickDF.key = traceDF.key
-    """
-    res = sqlContext.sql(query).collect()
+            clickDF = get_click_df(sc, d_all_clicks, sqlContext, day,host, 'clickDF')
 
-    click_traces = []
-    for row in res:
-        d = {'key': row.key, 'requests': row.requests, 'click_data':row.click_data, 'geo_data': row.geo_data, 'ua_data' : row.ua_data}
-        click_traces.append(d)
+            query = """
+            SELECT *
+            FROM traceDF JOIN clickDF
+            WHERE clickDF.key = traceDF.key
+            """
+            res = sqlContext.sql(query).collect()
 
-    json_outfile = os.path.join(output_dir, 'join_data.json')
-    tsv_outfile = os.path.join(output_dir, 'join_data.tsv')
+            click_traces = []
+            for row in res:
+                d = {'key': row.key, 'requests': row.requests, 'click_data':row.click_data, 'geo_data': row.geo_data, 'ua_data' : row.ua_data}
+                click_traces.append(d)
 
-    try:
-        os.makedirs( output_dir )
-    except:
-        print(traceback.format_exc())
+            json_outfile = os.path.join(output_partition, 'join_data.json')
 
-
-    df = pd.DataFrame(click_traces)
-    # keep only (request, click_data pairs) where the article clicked on is in the trace
-    def article_in_trace(r):
-        page = r['click_data']['title']
-        return page in [e['title'] for e in r['requests']]
-
-    df_clean = df[df.apply(article_in_trace, axis=1)].copy()
-    df_clean['survey_token'] = df_clean['click_data'].apply(lambda x: x['survey_token'])
-    # drop any rows with the same token.
-    df_clean.drop_duplicates(inplace = True, subset = 'survey_token',  keep = False)
-
-    df_clean.to_csv(tsv_outfile, sep = '\t', index=False)
-    json.dump(click_traces, open(json_outfile, 'w'))
-
-    nclicks = int(sqlContext.sql("SELECT COUNT(*) as n FROM clickDF ").collect()[0].n)
-    joinSize = len(click_traces)
-    cleanSize = df_clean.shape[0]
-    status = '# Clicks: %d Join Size: %d Clean Size %d' % (nclicks, joinSize, cleanSize)
-    print(status)
-    sqlContext.dropTempTable('traceDF')
-    sqlContext.dropTempTable('clickDF')
+            try:
+                os.makedirs( output_partition )
+            except:
+                print(traceback.format_exc())
 
 
+            json.dump(click_traces, open(json_outfile, 'w'))
 
+            nclicks = int(sqlContext.sql("SELECT COUNT(*) as n FROM clickDF ").collect()[0].n)
+            joinSize = len(click_traces)
+            status = '# Clicks: %d Join Size: %d Clean Size %d' % (nclicks, joinSize)
+            print(status)
+            count_df[host][day] = status
+            
 
-
-
-
-
-
+    pprint(count_df)
 
 
