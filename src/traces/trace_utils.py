@@ -344,16 +344,16 @@ def get_random_time_list():
     return times
 
 
-def sessionize(trace):
+def sessionize(trace, interval = 60):
     """
     Break trace whenever
-    there is 30 min gap between requests
+    there is interval minute gap between requests
     """
     sessions = []
     session = [trace[0]]
     for r in trace[1:]:
         d = r['ts'] -  session[-1]['ts']
-        if d > datetime.timedelta(minutes=60):
+        if d > datetime.timedelta(minutes=interval):
             sessions.append(session)
             session = [r,]
         else:
