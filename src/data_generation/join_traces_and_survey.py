@@ -67,7 +67,7 @@ def find_click_request(row):
     return row
 
 
-def load_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces', start = '2016-03-01', stop = '2016-03-08'):
+def load_partitioned_click_trace_data(version, directory = '/Users/ellerywulczyn/readers/data/click_traces', start = '2016-03-01', stop = '2016-03-08'):
     """
     Loads all join_data.tsvs for the given timespan into a single df.
     """

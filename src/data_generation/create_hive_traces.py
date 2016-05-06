@@ -3,25 +3,27 @@ import pandas as pd
 import os
 import sys
 import inspect
+from db_utils import exec_hive_stat2, get_hive_timespan
+import dateutil
 
 """
 USAGE:
 python create_hive_traces.py \
---start 2016-03-01 \
---stop 2016-03-01 \
+--start 2016-05-01 \
+--stop 2016-05-01 \
 --db traces \
---table test \
+--name test \
 --priority
 """
 
 
 
-def create_hive_trace_table(db_name, table_name, local = True):
+def create_hive_trace_table(db_name, table_name, priority = True):
     """
     Create a Table partitioned by day and host
     """
     query = """
-    CREATE TABLE IF NOT EXISTS %(db_name)s.%(table_name)s (
+    CREATE TABLE IF NOT EXISTS %(db_name)s.%(table_name)s_by_day (
         ip STRING,
         ua STRING,
         geocoded_data MAP<STRING,STRING>,
@@ -36,16 +38,14 @@ def create_hive_trace_table(db_name, table_name, local = True):
 
     params = {'db_name': db_name, 'table_name': table_name}
 
-    if local:
-        execute_hive_expression(query % params)
-    else: 
-        exec_hive(query % params)
+    
+    exec_hive_stat2(query % params, priority = priority)
 
 
-def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority = True):
+def add_day_to_hive_trace_table(db_name, table_name, day, priority = True):
 
     query = """
-    INSERT OVERWRITE TABLE %(db_name)s.%(table_name)s
+    INSERT OVERWRITE TABLE %(db_name)s.%(table_name)s_by_day
     PARTITION(year=%(year)d, month=%(month)d, day =%(day)d, host)
     SELECT
         client_ip,
@@ -93,6 +93,7 @@ def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority
                     webrequest_source = 'text'
                     AND agent_type = 'user'
                     AND %(time_conditions)s
+                    AND hour = 1
                     AND access_method != 'mobile app'
                     AND uri_host in ('en.wikipedia.org', 'en.m.wikipedia.org')
                 ) c
@@ -121,13 +122,35 @@ def add_day_to_hive_trace_table(db_name, table_name, day, local = True, priority
                 'day': day_dt.day
                 }
 
-    if local:
-        execute_hive_expression(query % params, priority = priority)
-    else: 
-        exec_hive(query % params, priority = priority)
+    
+    exec_hive_stat2(query % params, priority = priority)
 
 
+def ungroup(db_name, table_name, priority = True):
+    query = """
+    CREATE TABLE %(db_name)s.%(table_name)s
+    ROW FORMAT DELIMITED
+    FIELDS TERMINATED BY '\t'
+    STORED AS TEXTFILE AS
+    SELECT
+        ip,
+        ua,
+        geocoded_data,
+        user_agent_map,
+        CONCAT_WS('REQUEST_DELIM', COLLECT_LIST(requests)) AS requests
+    FROM
+        %(db_name)s.%(table_name)s_by_day
+    WHERE
+        year = 2016
+    GROUP BY
+        ip,
+        ua,
+        geocoded_data,
+        user_agent_map
+    """
+    params = {'db_name': db_name, 'table_name': table_name}
 
+    exec_hive_stat2(query % params, priority = priority)
 
 if __name__ == '__main__':
 
@@ -148,7 +171,7 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '--table', required=True, 
+        '--name', required=True, 
         help='hive table'
     )
 
@@ -159,4 +182,13 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args()
-    create_hive_trace_table(args.db, args.table, args.start, args.stop, local = False, priority = args.priority)
+    create_hive_trace_table(args.db, args.name, priority = args.priority)
+
+    start = args.start 
+    stop  = args.stop
+    days = [str(day) for day in pd.date_range(start,stop)] 
+    for day in days:
+        print('Adding Traces From: ', day)
+        add_day_to_hive_trace_table(args.db, args.name, day, priority = args.priority)
+    ungroup(args.db, args.name, priority = args.priority)
+
