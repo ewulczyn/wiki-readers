@@ -2,10 +2,32 @@ import json, sys, errno, codecs, datetime
 import numpy as np
 from heapq import heappop, heappush
 from pprint import pprint
+from datetime import datetime
+import time
+
+def num_pageviews(session):
+  return len([r for r in session if 'is_pageview' in r and r['is_pageview'] == 'true'])
 
 
+def get_session_length(session):
+  if len(session) < 2:
+      return 0
+  else:
+      d1 = session[0]['ts']
+      d2 = session[-1]['ts']
+      
+      # convert to unix timestamp
+      d1_ts = time.mktime(d1.timetuple())
+      d2_ts = time.mktime(d2.timetuple())
 
-DATE_FORMAT = '%Y-%m-%dT%H:%M:%S'
+      # they are now in seconds, subtract and then divide by 60 to get minutes.
+      return (d2_ts-d1_ts) / 60
+
+
+def external_searches(session):
+  return len([r for r in session if 'referer_class' in r and r['referer_class'] == 'external (search engine)'])
+
+
 
 # This function measures the "DFS-likeness" of a tree:
 # If a tree has a structure for which all valid traversals are identical, it returns NaN.a
