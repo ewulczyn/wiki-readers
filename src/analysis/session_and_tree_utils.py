@@ -29,8 +29,6 @@ def sessionize(trace, interval = 60):
     there is interval minute gap between requests
     """
     sessions = []
-    if len(trace) <1:
-        print (trace)
     session = [trace[0]]
     for r in trace[1:]:
         d = r['ts'] -  session[-1]['ts']
