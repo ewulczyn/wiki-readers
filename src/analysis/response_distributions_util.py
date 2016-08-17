@@ -101,6 +101,9 @@ def plot_proportion(d, x, hue, title,  xorder = None, dropna_x = True, dropna_hu
     if rotate:
         plt.xticks(rotation=45) 
 
+    plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+
+
 def plot_metric_breakdowns(df, metric):
 
     dims = ['host', 'information depth', 'prior knowledge', 'single motivation']
@@ -113,8 +116,6 @@ def plot_metric_breakdowns(df, metric):
         plt.figure()
         plot_metric(df, dim, metric, estimator =np.median, ci = None, rotate = True)
         plt.figure()
-        #plt.figure()
-        #plot_metric(df, 'host', metric, kind = 'box')
         
     
 def plot_metric(d, x, y,

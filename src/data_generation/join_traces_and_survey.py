@@ -1,4 +1,4 @@
-from misc_utils import get_partition_name
+from .misc_utils import get_partition_name
 import pandas as pd
 from db_utils import query_analytics_store
 import os
