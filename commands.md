@@ -6,7 +6,7 @@
 
 ## Trace Data
 
-1. run `src/traces/create_hive_traces.py`. This creates a table of requests grouped by ip, ua, xff for the given time span.
+1. run `src/traces/create_hive_traces.py`. This creates a table of requests grouped by ip and ua for the given time span.
 
 ```
 python create_hive_traces.py \
